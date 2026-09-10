@@ -213,18 +213,58 @@ with tab1:
 with tab2:
     st.subheader("🏢 광고대행사 및 방송 매체사 매출 추이")
     col_l, col_r = st.columns(2)
+    
     with col_l:
         st.markdown("#### 🏆 주요 광고대행사 전파광고 매출")
         if not df_agency.empty:
-            fig_agency = px.bar(df_agency, x="대행사", y="매출(억원)", color="연월", barmode="group", text_auto=True)
-            st.plotly_chart(fig_agency, use_container_width=True)
+            all_agencies = sorted(df_agency["대행사"].unique().tolist())
+            selected_agencies = st.multiselect(
+                "조회할 대행사 선택",
+                options=all_agencies,
+                default=all_agencies,
+                help="비교하고 싶은 대행사만 클릭하거나 검색해 필터링할 수 있습니다."
+            )
+            filtered_agency = df_agency[df_agency["대행사"].isin(selected_agencies)]
+            
+            if not filtered_agency.empty:
+                fig_agency = px.bar(
+                    filtered_agency, 
+                    x="대행사", 
+                    y="매출(억원)", 
+                    color="연월", 
+                    barmode="group", 
+                    text_auto=True
+                )
+                st.plotly_chart(fig_agency, width="stretch")
+            else:
+                st.warning("선택된 대행사가 없습니다. 위에서 대행사를 선택해 주세요.")
         else:
             st.info("대행사 매출 집계 중")
+            
     with col_r:
         st.markdown("#### 📺 방송 매체사 광고 매출")
         if not df_tv.empty:
-            fig_tv = px.line(df_tv[df_tv["채널"] != "Total (광고매출 only)"], x="연월", y="매출(억원)", color="채널", markers=True)
-            st.plotly_chart(fig_tv, use_container_width=True)
+            tv_source = df_tv[df_tv["채널"] != "Total (광고매출 only)"]
+            all_channels = sorted(tv_source["채널"].unique().tolist())
+            selected_channels = st.multiselect(
+                "조회할 방송 매체/채널 선택",
+                options=all_channels,
+                default=all_channels,
+                help="추이를 확인하고 싶은 채널만 필터링할 수 있습니다."
+            )
+            filtered_tv = tv_source[tv_source["채널"].isin(selected_channels)]
+            
+            if not filtered_tv.empty:
+                fig_tv = px.line(
+                    filtered_tv, 
+                    x="연월", 
+                    y="매출(억원)", 
+                    color="채널", 
+                    markers=True
+                )
+                st.plotly_chart(fig_tv, width="stretch")
+            else:
+                st.warning("선택된 매체/채널이 없습니다. 위에서 채널을 선택해 주세요.")
         else:
             st.info("방송사 매출 집계 중")
 
