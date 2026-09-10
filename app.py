@@ -1,18 +1,59 @@
 import os
 import glob
 import re
+import json
+import hashlib
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import google.generativeai as genai
 
-# 1. 페이지 설정
+# --- 1. 기본 설정 및 데이터 디렉토리 ---
 st.set_page_config(page_title="월간 업계 동향 통합 인텔리전스", layout="wide", page_icon="📊")
 
 DATA_DIR = "./data"
+USER_DB_FILE = "users.json"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 엑셀 종합 파서
+# 비밀번호 암호화 함수
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# 회원 DB 로드 및 저장
+def load_users():
+    if not os.path.exists(USER_DB_FILE):
+        # 기본 마스터 계정 생성 (아이디: admin / 비밀번호: admin1234)
+        default_users = {
+            "admin": {
+                "name": "마스터 관리자",
+                "password": hash_password("admin1234"),
+                "role": "admin",
+                "approved": True
+            }
+        }
+        with open(USER_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(default_users, f, ensure_ascii=False, indent=4)
+        return default_users
+    try:
+        with open(USER_DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_users(users_dict):
+    with open(USER_DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(users_dict, f, ensure_ascii=False, indent=4)
+
+users_db = load_users()
+
+# 세션 상태 초기화
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["username"] = None
+    st.session_state["role"] = None
+    st.session_state["user_name"] = None
+
+# --- 2. 엑셀 데이터 파싱 함수 ---
 @st.cache_data
 def load_all_data():
     all_files = glob.glob("업계동향_*.xlsx") + glob.glob(f"{DATA_DIR}/*.xlsx")
@@ -131,41 +172,167 @@ def load_all_data():
             
     return pd.DataFrame(issues_list), pd.DataFrame(tv_sales_list), pd.DataFrame(pt_list), pd.DataFrame(agency_sales_list), all_files
 
-df_issues, df_tv, df_pt, df_agency, loaded_files = load_all_data()
+# --- 3. 로그인 및 회원가입 화면 (비로그인 상태) ---
+if not st.session_state["logged_in"]:
+    st.title("🔒 월간 미디어·광고 동향 대시보드")
+    st.caption("사내 인가된 사용자 전용 시스템입니다. 회원가입 후 관리자 승인을 거쳐 접속할 수 있습니다.")
+    st.markdown("---")
+    
+    login_tab, signup_tab = st.tabs(["🔑 로그인", "📝 회원가입 신청"])
+    
+    with login_tab:
+        with st.form("login_form"):
+            login_id = st.text_input("아이디").strip()
+            login_pw = st.text_input("비밀번호", type="password")
+            submit_login = st.form_submit_button("로그인", type="primary")
+            
+            if submit_login:
+                users_current = load_users()
+                if login_id in users_current:
+                    user_info = users_current[login_id]
+                    if user_info["password"] == hash_password(login_pw):
+                        if user_info.get("approved", False):
+                            st.session_state["logged_in"] = True
+                            st.session_state["username"] = login_id
+                            st.session_state["role"] = user_info.get("role", "member")
+                            st.session_state["user_name"] = user_info.get("name", login_id)
+                            st.success(f"환영합니다, {st.session_state['user_name']}님!")
+                            st.rerun()
+                        else:
+                            st.warning("⏳ 관리자 승인 대기 중입니다. 마스터 관리자의 승인 완료 후 이용하실 수 있습니다.")
+                    else:
+                        st.error("비밀번호가 올바르지 않습니다.")
+                else:
+                    st.error("등록되지 않은 사용자 아이디입니다.")
 
+    with signup_tab:
+        with st.form("signup_form"):
+            new_id = st.text_input("희망 아이디 (영문/숫자)").strip()
+            new_name = st.text_input("이름 (실명 입력)")
+            new_pw = st.text_input("비밀번호", type="password")
+            new_pw_confirm = st.text_input("비밀번호 확인", type="password")
+            submit_signup = st.form_submit_button("가입 신청하기")
+            
+            if submit_signup:
+                users_current = load_users()
+                if not new_id or not new_name or not new_pw:
+                    st.error("모든 항목을 입력해 주세요.")
+                elif new_id in users_current:
+                    st.error("이미 사용 중인 아이디입니다. 다른 아이디를 입력해 주세요.")
+                elif new_pw != new_pw_confirm:
+                    st.error("비밀번호 확인이 일치하지 않습니다.")
+                else:
+                    users_current[new_id] = {
+                        "name": new_name,
+                        "password": hash_password(new_pw),
+                        "role": "member",
+                        "approved": False
+                    }
+                    save_users(users_current)
+                    st.success("🎉 회원가입 신청이 완료되었습니다! 관리자 승인 후 로그인하실 수 있습니다.")
+    st.stop()
+
+# --- 4. 로그인 성공 후 메인 화면 ---
+df_issues, df_tv, df_pt, df_agency, loaded_files = load_all_data()
 df_pt_unique = df_pt.drop_duplicates(subset=["PT일자", "광고주", "품목"]) if not df_pt.empty else pd.DataFrame()
 
-# --- 사이드바: 관리자 및 AI 키 설정 ---
+# 사이드바
 st.sidebar.title("⚙️ 설정 및 제어판")
+st.sidebar.write(f"접속자: **{st.session_state['user_name']}** (`{st.session_state['role']}`)")
 
-# AI API Key 입력 필드
-api_key = st.sidebar.text_input("🔑 Gemini API Key (선택)", type="password", help="Google AI Studio에서 발급받은 키를 입력하면 AI 탭이 활성화됩니다.")
+if st.sidebar.button("로그아웃"):
+    st.session_state["logged_in"] = False
+    st.session_state["username"] = None
+    st.session_state["role"] = None
+    st.session_state["user_name"] = None
+    st.rerun()
 
-role = st.sidebar.radio("접속 권한", ["팀원 (조회 전용)", "마스터 (파일 관리)"])
+# --- 회원 정보 변경 메뉴 (공통) ---
+with st.sidebar.expander("👤 내 정보 관리", expanded=False):
+    with st.form("edit_profile_form"):
+        curr_user_id = st.session_state["username"]
+        users_current = load_users()
+        my_info = users_current.get(curr_user_id, {})
+        
+        st.caption(f"아이디: **{curr_user_id}**")
+        edit_name = st.text_input("이름(실명)", value=my_info.get("name", ""))
+        curr_pw_input = st.text_input("현재 비밀번호 확인", type="password")
+        new_pw_input = st.text_input("새 비밀번호 (변경 시에만 입력)", type="password")
+        new_pw_confirm = st.text_input("새 비밀번호 확인", type="password")
+        
+        save_profile_btn = st.form_submit_button("정보 저장")
+        
+        if save_profile_btn:
+            if not curr_pw_input:
+                st.error("현재 비밀번호를 입력해야 수정할 수 있습니다.")
+            elif hash_password(curr_pw_input) != my_info.get("password"):
+                st.error("현재 비밀번호가 일치하지 않습니다.")
+            else:
+                # 비밀번호 변경 검증
+                if new_pw_input:
+                    if new_pw_input != new_pw_confirm:
+                        st.error("새 비밀번호 확인이 일치하지 않습니다.")
+                    else:
+                        my_info["password"] = hash_password(new_pw_input)
+                        my_info["name"] = edit_name
+                        users_current[curr_user_id] = my_info
+                        save_users(users_current)
+                        st.session_state["user_name"] = edit_name
+                        st.success("비밀번호 및 회원 정보가 성공적으로 변경되었습니다!")
+                        st.rerun()
+                else:
+                    my_info["name"] = edit_name
+                    users_current[curr_user_id] = my_info
+                    save_users(users_current)
+                    st.session_state["user_name"] = edit_name
+                    st.success("회원 정보가 성공적으로 변경되었습니다!")
+                    st.rerun()
 
-if role == "마스터 (파일 관리)":
-    pwd = st.sidebar.text_input("마스터 비밀번호", type="password")
-    if pwd == "admin1234":
-        st.sidebar.success("인증 완료: 새 월간 파일을 추가할 수 있습니다.")
-        new_file = st.sidebar.file_uploader("월간 엑셀 추가 (.xlsx)", type=["xlsx"])
-        if new_file is not None:
-            save_path = os.path.join(DATA_DIR, new_file.name)
-            with open(save_path, "wb") as f:
-                f.write(new_file.getbuffer())
-            st.sidebar.success(f"{new_file.name} 저장 완료!")
-            st.cache_data.clear()
-            st.rerun()
-    elif pwd:
-        st.sidebar.error("비밀번호가 올바르지 않습니다.")
-else:
-    st.sidebar.info("💡 팀원 열람 모드입니다.")
+st.sidebar.markdown("---")
+api_key = st.sidebar.text_input("🔑 Gemini API Key (선택)", type="password", help="API 키를 입력하면 AI 탭이 활성화됩니다.")
+
+# 마스터 전용 관리 기능
+if st.session_state["role"] == "admin":
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("👑 마스터 관리 메뉴")
+    
+    # 신규 엑셀 업로드
+    new_file = st.sidebar.file_uploader("월간 엑셀 추가 (.xlsx)", type=["xlsx"])
+    if new_file is not None:
+        save_path = os.path.join(DATA_DIR, new_file.name)
+        with open(save_path, "wb") as f:
+            f.write(new_file.getbuffer())
+        st.sidebar.success(f"{new_file.name} 저장 완료!")
+        st.cache_data.clear()
+        st.rerun()
+        
+    # 회원 승인 관리 창
+    with st.sidebar.expander("👥 회원 승인 관리", expanded=False):
+        current_users = load_users()
+        pending_users = {uid: info for uid, info in current_users.items() if not info.get("approved", False)}
+        
+        if pending_users:
+            st.write(f"승인 대기자: **{len(pending_users)}명**")
+            for uid, info in pending_users.items():
+                st.write(f"- {info.get('name', uid)} (`{uid}`)")
+                col_app, col_del = st.columns(2)
+                if col_app.button(f"승인", key=f"app_{uid}"):
+                    current_users[uid]["approved"] = True
+                    save_users(current_users)
+                    st.rerun()
+                if col_del.button(f"반려", key=f"del_{uid}"):
+                    del current_users[uid]
+                    save_users(current_users)
+                    st.rerun()
+        else:
+            st.caption("대기 중인 승인 요청이 없습니다.")
 
 st.sidebar.markdown("---")
 st.sidebar.write(f"📁 적재 완료 파일: **{len(loaded_files)}건**")
 
-# --- 메인 대시보드 ---
+# 대시보드 타이틀
 st.title("📊 월간 미디어·광고 업계 동향 대시보드")
-st.caption("5년간 축적된 월간 동향 보고서를 다각도로 분석·조회하는 통합 인텔리전스 시스템")
+st.caption("2021년 9월 이후 축적된 월간 동향 보고서를 다각도로 분석·조회하는 통합 인텔리전스 시스템")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "🎯 광고회사 PT 수주 현황", 
@@ -209,7 +376,7 @@ with tab1:
     else:
         st.warning("PT 데이터가 아직 없습니다.")
 
-# 탭 2: 매출 동향
+# 탭 2: 매출 동향 (다중 선택 필터)
 with tab2:
     st.subheader("🏢 광고대행사 및 방송 매체사 매출 추이")
     col_l, col_r = st.columns(2)
@@ -290,8 +457,6 @@ with tab4:
     else:
         try:
             genai.configure(api_key=api_key)
-            
-            # 최신 기본 모델(gemini-3.6-flash) 지정
             target_model = "gemini-3.6-flash"
             model = genai.GenerativeModel(target_model)
             st.caption(f"연결된 AI 모델: `{target_model}`")
@@ -300,7 +465,6 @@ with tab4:
             
             if st.button("AI 분석 요청", type="primary") and user_question:
                 with st.spinner("동향 데이터를 분석 중입니다..."):
-                    # 컨텍스트 최적화
                     context_issues = df_issues.head(40).to_string(index=False)
                     context_pt = df_pt_unique.head(30).to_string(index=False)
                     
