@@ -288,8 +288,14 @@ with st.sidebar.expander("👤 내 정보 관리", expanded=False):
                     st.success("회원 정보가 성공적으로 변경되었습니다!")
                     st.rerun()
 
-st.sidebar.markdown("---")
-api_key = st.sidebar.text_input("🔑 Gemini API Key (선택)", type="password", help="API 키를 입력하면 AI 탭이 활성화됩니다.")
+# Secrets 금고에 등록된 키가 있으면 자동 사용, 없으면 수동 입력받기
+api_key = st.secrets.get("GEMINI_API_KEY", None)
+
+if not api_key:
+    st.sidebar.markdown("---")
+    api_key = st.sidebar.text_input("🔑 Gemini API Key (선택)", type="password", help="API 키를 입력하면 AI 탭이 활성화됩니다.")
+else:
+    st.sidebar.caption("🤖 Gemini AI 연동 활성화됨")
 
 # 마스터 전용 관리 기능
 if st.session_state["role"] == "admin":
